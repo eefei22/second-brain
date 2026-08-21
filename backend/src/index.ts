@@ -9,7 +9,7 @@ import cors from "cors";
 import { fragmentsRouter } from "./routes/fragments.js";
 import { notesRouter } from "./routes/notes.js";
 import { noteActionsRouter } from "./routes/noteActions.js";
-import { domainsRouter, subfolderSuggestionsRouter } from "./routes/domains.js";
+import { domainsRouter, subfoldersRouter, subfolderSuggestionsRouter } from "./routes/domains.js";
 import { retrievalRouter } from "./routes/retrieval.js";
 
 const app = express();
@@ -26,7 +26,8 @@ app.use("/fragments", fragmentsRouter);
 app.use("/notes", notesRouter);
 app.use("/notes", noteActionsRouter); // /notes/:id/actions/*, /notes/:id/chat
 app.use("/domains", domainsRouter);
-app.use("/subfolders", subfolderSuggestionsRouter);
+app.use("/subfolders", subfoldersRouter); // /subfolders/:id (rename/move/delete)
+app.use("/subfolders", subfolderSuggestionsRouter); // /subfolders/suggestions/*
 app.use("/", retrievalRouter); // /search, /chat, /conversations/:id, /summary/generate
 
 // Last-resort error handler — logs and returns 500 instead of crashing the

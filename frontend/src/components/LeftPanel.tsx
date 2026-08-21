@@ -1,5 +1,36 @@
 import { useEffect, useState } from "react";
-import { listDomains, listNotes, getQueue, search, type Domain, type NoteSummary } from "../lib/api.js";
+import {
+  listDomains,
+  listNotes,
+  listSubfolders,
+  getQueue,
+  search,
+  createDomain,
+  renameDomain,
+  deleteDomain,
+  createSubfolder,
+  updateSubfolder,
+  deleteSubfolder,
+  createNote,
+  updateNote,
+  deleteNote,
+  type Domain,
+  type Subfolder,
+  type NoteSummary,
+} from "../lib/api.js";
+
+// What the open context menu is pointing at, and where to render it.
+type MenuTarget =
+  | { kind: "domain"; domain: Domain }
+  | { kind: "subfolder"; subfolder: Subfolder }
+  | { kind: "note"; note: NoteSummary };
+
+interface MenuState {
+  target: MenuTarget;
+  x: number;
+  y: number;
+  mode: "actions" | "move"; // "move" swaps the menu body to a domain picker
+}
 
 export function LeftPanel({
   onOpenNote,
@@ -9,54 +40,178 @@ export function LeftPanel({
   refreshKey: number;
 }) {
   const [domains, setDomains] = useState<Domain[]>([]);
-  const [notesByDomain, setNotesByDomain] = useState<Record<string, NoteSummary[]>>({});
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [expandedDomains, setExpandedDomains] = useState<Record<string, boolean>>({});
+  const [domainSubfolders, setDomainSubfolders] = useState<Record<string, Subfolder[]>>({});
+  const [domainRootNotes, setDomainRootNotes] = useState<Record<string, NoteSummary[]>>({});
+  const [expandedSubfolders, setExpandedSubfolders] = useState<Record<string, boolean>>({});
+  const [subfolderNotes, setSubfolderNotes] = useState<Record<string, NoteSummary[]>>({});
   const [queueCount, setQueueCount] = useState(0);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<NoteSummary[] | null>(null);
   const [uncategorized, setUncategorized] = useState<NoteSummary[]>([]);
+  const [menu, setMenu] = useState<MenuState | null>(null);
 
-  // Top-level lists: fetched on mount, and re-fetched whenever refreshKey
-  // bumps (i.e. a fragment was resolved/deferred elsewhere in the app).
   useEffect(() => {
-    listDomains().then(setDomains);
-    getQueue().then((q) => setQueueCount(q.length));
-    listNotes({}).then((all) => setUncategorized(all.filter((n) => !n.domain_id)));
-  }, [refreshKey]);
-
-  // Any domain the user currently has expanded needs its notes re-fetched
-  // too on refreshKey — otherwise a note captured while the domain was
-  // already open (or captured earlier and never refetched since) never
-  // shows up until a full page reload. This was the "second note doesn't
-  // appear" bug: notesByDomain used to be populated once on first expand
-  // and then cached forever.
-  useEffect(() => {
-    const openDomainIds = Object.keys(expanded).filter((id) => expanded[id]);
-    if (openDomainIds.length === 0) return;
-    Promise.all(openDomainIds.map((id) => listNotes({ domain_id: id }))).then((results) => {
-      setNotesByDomain((prev) => {
-        const next = { ...prev };
-        openDomainIds.forEach((id, i) => {
-          next[id] = results[i];
-        });
-        return next;
-      });
-    });
+    refreshTop();
+    // Re-fetch anything currently expanded too, so edits made elsewhere
+    // (e.g. the capture flow) show up without a manual re-expand.
+    Object.keys(expandedDomains)
+      .filter((id) => expandedDomains[id])
+      .forEach(loadDomainContents);
+    Object.keys(expandedSubfolders)
+      .filter((id) => expandedSubfolders[id])
+      .forEach(loadSubfolderNotes);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
-  async function toggleDomain(domainId: string) {
-    setExpanded((e) => ({ ...e, [domainId]: !e[domainId] }));
-    if (!notesByDomain[domainId]) {
-      const notes = await listNotes({ domain_id: domainId });
-      setNotesByDomain((n) => ({ ...n, [domainId]: notes }));
+  // Close the context menu on any outside click or Escape.
+  useEffect(() => {
+    if (!menu) return;
+    function close() {
+      setMenu(null);
     }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenu(null);
+    }
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
+  function refreshTop() {
+    listDomains().then(setDomains);
+    getQueue().then((q) => setQueueCount(q.length));
+    listNotes({}).then((all) => setUncategorized(all.filter((n) => !n.domain_id)));
+  }
+
+  async function loadDomainContents(domainId: string) {
+    const [subs, rootNotes] = await Promise.all([
+      listSubfolders(domainId),
+      listNotes({ domain_id: domainId }),
+    ]);
+    setDomainSubfolders((s) => ({ ...s, [domainId]: subs }));
+    setDomainRootNotes((n) => ({ ...n, [domainId]: rootNotes }));
+  }
+
+  async function loadSubfolderNotes(subfolderId: string) {
+    const notes = await listNotes({ parent_folder_id: subfolderId });
+    setSubfolderNotes((n) => ({ ...n, [subfolderId]: notes }));
+  }
+
+  async function toggleDomain(domainId: string) {
+    const nowOpen = !expandedDomains[domainId];
+    setExpandedDomains((e) => ({ ...e, [domainId]: nowOpen }));
+    if (nowOpen) await loadDomainContents(domainId);
+  }
+
+  async function toggleSubfolder(subfolderId: string) {
+    const nowOpen = !expandedSubfolders[subfolderId];
+    setExpandedSubfolders((e) => ({ ...e, [subfolderId]: nowOpen }));
+    if (nowOpen) await loadSubfolderNotes(subfolderId);
   }
 
   async function runSearch(q: string) {
     setQuery(q);
     if (!q) return setSearchResults(null);
     setSearchResults(await search(q));
+  }
+
+  function openMenu(e: React.MouseEvent, target: MenuTarget) {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ target, x: e.clientX, y: e.clientY, mode: "actions" });
+  }
+
+  // --- Actions ---------------------------------------------------------
+
+  async function handleNewDomain() {
+    const name = window.prompt("New domain name:");
+    if (!name?.trim()) return;
+    await createDomain(name.trim());
+    refreshTop();
+  }
+
+  async function handleRenameDomain(domain: Domain) {
+    const name = window.prompt("Rename domain:", domain.name);
+    if (!name?.trim() || name.trim() === domain.name) return;
+    await renameDomain(domain.id, name.trim());
+    refreshTop();
+  }
+
+  async function handleDeleteDomain(domain: Domain) {
+    if (!window.confirm(`Delete "${domain.name}"? Its notes will become Uncategorized, not deleted.`))
+      return;
+    await deleteDomain(domain.id);
+    refreshTop();
+  }
+
+  async function handleNewSubfolder(domainId: string) {
+    const name = window.prompt("New subfolder name:");
+    if (!name?.trim()) return;
+    await createSubfolder(domainId, name.trim());
+    await loadDomainContents(domainId);
+    if (!expandedDomains[domainId]) setExpandedDomains((e) => ({ ...e, [domainId]: true }));
+  }
+
+  async function handleRenameSubfolder(sub: Subfolder) {
+    const name = window.prompt("Rename subfolder:", sub.name);
+    if (!name?.trim() || name.trim() === sub.name) return;
+    await updateSubfolder(sub.id, { name: name.trim() });
+    await loadDomainContents(sub.domainId);
+  }
+
+  async function handleDeleteSubfolder(sub: Subfolder) {
+    if (!window.confirm(`Delete "${sub.name}"? Its notes move to the domain root, not deleted.`)) return;
+    await deleteSubfolder(sub.id);
+    await loadDomainContents(sub.domainId);
+  }
+
+  async function handleMoveSubfolder(sub: Subfolder, newDomainId: string) {
+    const oldDomainId = sub.domainId;
+    await updateSubfolder(sub.id, { domain_id: newDomainId });
+    await loadDomainContents(oldDomainId);
+    if (expandedDomains[newDomainId]) await loadDomainContents(newDomainId);
+    setMenu(null);
+  }
+
+  async function handleNewNote(domainId: string, parentFolderId: string | null) {
+    const title = window.prompt("New note title:");
+    if (!title?.trim()) return;
+    await createNote({ title: title.trim(), domain_id: domainId, parent_folder_id: parentFolderId });
+    if (parentFolderId) await loadSubfolderNotes(parentFolderId);
+    else await loadDomainContents(domainId);
+  }
+
+  async function handleRenameNote(note: NoteSummary) {
+    const title = window.prompt("Rename note:", note.title);
+    if (!title?.trim() || title.trim() === note.title) return;
+    await updateNote(note.note_id, { title: title.trim() });
+    refreshNoteLocation(note);
+  }
+
+  async function handleDeleteNote(note: NoteSummary) {
+    if (!window.confirm(`Delete "${note.title}"? It can be restored later (soft delete).`)) return;
+    await deleteNote(note.note_id);
+    refreshNoteLocation(note);
+    refreshTop();
+  }
+
+  async function handleMoveNote(note: NoteSummary, newDomainId: string | null) {
+    await updateNote(note.note_id, { domain_id: newDomainId, parent_folder_id: null });
+    refreshNoteLocation(note);
+    if (newDomainId && expandedDomains[newDomainId]) await loadDomainContents(newDomainId);
+    if (!newDomainId) refreshTop();
+    setMenu(null);
+  }
+
+  // Re-fetch wherever a note used to live, after renaming/deleting/moving it.
+  function refreshNoteLocation(note: NoteSummary) {
+    if (note.parent_folder_id) loadSubfolderNotes(note.parent_folder_id);
+    else if (note.domain_id) loadDomainContents(note.domain_id);
+    else refreshTop();
   }
 
   return (
@@ -74,6 +229,12 @@ export function LeftPanel({
             <span className="rounded-full bg-amber-700/60 px-2 text-xs font-medium">{queueCount}</span>
           </button>
         )}
+        <button
+          onClick={handleNewDomain}
+          className="w-full text-left px-2 py-1 text-xs text-cream-dim hover:text-cream transition"
+        >
+          + New domain
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
@@ -81,24 +242,57 @@ export function LeftPanel({
           <div className="space-y-0.5">
             <div className="text-xs uppercase tracking-wide text-cream-dim px-2 py-1">Results</div>
             {searchResults.map((n) => (
-              <NoteRow key={n.note_id} note={n} onClick={() => onOpenNote(n.note_id)} />
+              <NoteRow
+                key={n.note_id}
+                note={n}
+                onClick={() => onOpenNote(n.note_id)}
+                onMenu={(e) => openMenu(e, { kind: "note", note: n })}
+              />
             ))}
           </div>
         ) : (
           <>
             {domains.map((d) => (
               <div key={d.id} className="mb-1">
-                <button
+                <Row
+                  label={d.name}
+                  bold
+                  expanded={expandedDomains[d.id]}
                   onClick={() => toggleDomain(d.id)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-neutral-700 font-medium text-cream transition"
-                >
-                  <span className="text-cream-dim text-xs w-3">{expanded[d.id] ? "▾" : "▸"}</span>
-                  {d.name}
-                </button>
-                {expanded[d.id] && (
+                  onMenu={(e) => openMenu(e, { kind: "domain", domain: d })}
+                />
+                {expandedDomains[d.id] && (
                   <div className="ml-4 space-y-0.5">
-                    {(notesByDomain[d.id] ?? []).map((n) => (
-                      <NoteRow key={n.note_id} note={n} onClick={() => onOpenNote(n.note_id)} />
+                    {(domainSubfolders[d.id] ?? []).map((sub) => (
+                      <div key={sub.id}>
+                        <Row
+                          label={sub.name}
+                          icon="📁"
+                          expanded={expandedSubfolders[sub.id]}
+                          onClick={() => toggleSubfolder(sub.id)}
+                          onMenu={(e) => openMenu(e, { kind: "subfolder", subfolder: sub })}
+                        />
+                        {expandedSubfolders[sub.id] && (
+                          <div className="ml-4 space-y-0.5">
+                            {(subfolderNotes[sub.id] ?? []).map((n) => (
+                              <NoteRow
+                                key={n.note_id}
+                                note={n}
+                                onClick={() => onOpenNote(n.note_id)}
+                                onMenu={(e) => openMenu(e, { kind: "note", note: n })}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {(domainRootNotes[d.id] ?? []).map((n) => (
+                      <NoteRow
+                        key={n.note_id}
+                        note={n}
+                        onClick={() => onOpenNote(n.note_id)}
+                        onMenu={(e) => openMenu(e, { kind: "note", note: n })}
+                      />
                     ))}
                   </div>
                 )}
@@ -109,24 +303,246 @@ export function LeftPanel({
               <div className="mt-3 pt-3 border-t border-neutral-700">
                 <div className="text-xs uppercase tracking-wide text-cream-dim px-2 py-1">Uncategorized</div>
                 {uncategorized.map((n) => (
-                  <NoteRow key={n.note_id} note={n} onClick={() => onOpenNote(n.note_id)} />
+                  <NoteRow
+                    key={n.note_id}
+                    note={n}
+                    onClick={() => onOpenNote(n.note_id)}
+                    onMenu={(e) => openMenu(e, { kind: "note", note: n })}
+                  />
                 ))}
               </div>
             )}
           </>
         )}
       </div>
+
+      {menu && (
+        <ContextMenu
+          menu={menu}
+          domains={domains}
+          onClose={() => setMenu(null)}
+          onShowMove={() => setMenu((m) => (m ? { ...m, mode: "move" } : m))}
+          onNewSubfolder={(domainId) => {
+            setMenu(null);
+            handleNewSubfolder(domainId);
+          }}
+          onNewNote={(domainId, parentFolderId) => {
+            setMenu(null);
+            handleNewNote(domainId, parentFolderId);
+          }}
+          onRenameDomain={(d) => {
+            setMenu(null);
+            handleRenameDomain(d);
+          }}
+          onDeleteDomain={(d) => {
+            setMenu(null);
+            handleDeleteDomain(d);
+          }}
+          onRenameSubfolder={(s) => {
+            setMenu(null);
+            handleRenameSubfolder(s);
+          }}
+          onDeleteSubfolder={(s) => {
+            setMenu(null);
+            handleDeleteSubfolder(s);
+          }}
+          onMoveSubfolder={handleMoveSubfolder}
+          onRenameNote={(n) => {
+            setMenu(null);
+            handleRenameNote(n);
+          }}
+          onDeleteNote={(n) => {
+            setMenu(null);
+            handleDeleteNote(n);
+          }}
+          onMoveNote={handleMoveNote}
+        />
+      )}
     </div>
   );
 }
 
-function NoteRow({ note, onClick }: { note: NoteSummary; onClick: () => void }) {
+// --- Shared row + menu components ---------------------------------------
+
+function Row({
+  label,
+  icon,
+  bold,
+  expanded,
+  onClick,
+  onMenu,
+}: {
+  label: string;
+  icon?: string;
+  bold?: boolean;
+  expanded?: boolean;
+  onClick: () => void;
+  onMenu: (e: React.MouseEvent) => void;
+}) {
   return (
-    <button
+    <div
+      className="group w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-neutral-700 transition cursor-pointer"
       onClick={onClick}
-      className="w-full text-left px-2 py-1.5 rounded-md hover:bg-neutral-700 text-cream-dim truncate transition"
+      onContextMenu={onMenu}
     >
-      {note.title}
+      <span className="text-cream-dim text-xs w-3">{expanded ? "▾" : "▸"}</span>
+      {icon && <span className="text-xs">{icon}</span>}
+      <span className={`flex-1 truncate ${bold ? "font-medium text-cream" : "text-cream-dim"}`}>{label}</span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(e);
+        }}
+        className="opacity-0 group-hover:opacity-100 text-cream-dim hover:text-cream px-1 transition"
+      >
+        ⋮
+      </button>
+    </div>
+  );
+}
+
+function NoteRow({
+  note,
+  onClick,
+  onMenu,
+}: {
+  note: NoteSummary;
+  onClick: () => void;
+  onMenu: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <div
+      className="group w-full flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-700 transition cursor-pointer"
+      onClick={onClick}
+      onContextMenu={onMenu}
+    >
+      <span className="flex-1 truncate text-cream-dim">{note.title}</span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu(e);
+        }}
+        className="opacity-0 group-hover:opacity-100 text-cream-dim hover:text-cream px-1 transition"
+      >
+        ⋮
+      </button>
+    </div>
+  );
+}
+
+function ContextMenu({
+  menu,
+  domains,
+  onClose,
+  onShowMove,
+  onNewSubfolder,
+  onNewNote,
+  onRenameDomain,
+  onDeleteDomain,
+  onRenameSubfolder,
+  onDeleteSubfolder,
+  onMoveSubfolder,
+  onRenameNote,
+  onDeleteNote,
+  onMoveNote,
+}: {
+  menu: MenuState;
+  domains: Domain[];
+  onClose: () => void;
+  onShowMove: () => void;
+  onNewSubfolder: (domainId: string) => void;
+  onNewNote: (domainId: string, parentFolderId: string | null) => void;
+  onRenameDomain: (d: Domain) => void;
+  onDeleteDomain: (d: Domain) => void;
+  onRenameSubfolder: (s: Subfolder) => void;
+  onDeleteSubfolder: (s: Subfolder) => void;
+  onMoveSubfolder: (s: Subfolder, newDomainId: string) => void;
+  onRenameNote: (n: NoteSummary) => void;
+  onDeleteNote: (n: NoteSummary) => void;
+  onMoveNote: (n: NoteSummary, newDomainId: string | null) => void;
+}) {
+  // Clamp so the menu never renders off the right/bottom edge.
+  const style = { left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 200) };
+  // Narrowing `target.kind` doesn't persist into the onClick closures below
+  // if we keep reading menu.target (a property access) — a local const does.
+  const target = menu.target;
+
+  return (
+    <div
+      className="fixed z-50 min-w-[180px] rounded-md border border-neutral-600 bg-neutral-800 shadow-xl py-1 text-sm"
+      style={style}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      {menu.mode === "move" ? (
+        <>
+          <div className="px-3 py-1 text-xs uppercase tracking-wide text-cream-dim/70">Move to</div>
+          {domains
+            .filter((d) => {
+              if (target.kind === "subfolder") return d.id !== target.subfolder.domainId;
+              if (target.kind === "note") return d.id !== target.note.domain_id;
+              return true;
+            })
+            .map((d) => (
+              <MenuItem
+                key={d.id}
+                label={d.name}
+                onClick={() => {
+                  if (target.kind === "subfolder") onMoveSubfolder(target.subfolder, d.id);
+                  if (target.kind === "note") onMoveNote(target.note, d.id);
+                }}
+              />
+            ))}
+          {target.kind === "note" && target.note.domain_id && (
+            <MenuItem label="Uncategorized" onClick={() => onMoveNote(target.note, null)} />
+          )}
+        </>
+      ) : target.kind === "domain" ? (
+        <>
+          <MenuItem label="New Subfolder" onClick={() => onNewSubfolder(target.domain.id)} />
+          <MenuItem label="New Note" onClick={() => onNewNote(target.domain.id, null)} />
+          <MenuItem label="Rename" onClick={() => onRenameDomain(target.domain)} />
+          <MenuItem label="Delete" danger onClick={() => onDeleteDomain(target.domain)} />
+        </>
+      ) : target.kind === "subfolder" ? (
+        <>
+          <MenuItem
+            label="New Note"
+            onClick={() => onNewNote(target.subfolder.domainId, target.subfolder.id)}
+          />
+          <MenuItem label="Rename" onClick={() => onRenameSubfolder(target.subfolder)} />
+          <MenuItem label="Move to..." onClick={onShowMove} />
+          <MenuItem label="Delete" danger onClick={() => onDeleteSubfolder(target.subfolder)} />
+        </>
+      ) : (
+        <>
+          <MenuItem label="Rename" onClick={() => onRenameNote(target.note)} />
+          <MenuItem label="Move to..." onClick={onShowMove} />
+          <MenuItem label="Delete" danger onClick={() => onDeleteNote(target.note)} />
+        </>
+      )}
+      <div className="border-t border-neutral-700 mt-1 pt-1">
+        <MenuItem label="Cancel" muted onClick={onClose} />
+      </div>
+    </div>
+  );
+}
+
+function MenuItem({
+  label,
+  onClick,
+  danger,
+  muted,
+}: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  muted?: boolean;
+}) {
+  const color = danger ? "text-red-400 hover:bg-red-950/40" : muted ? "text-cream-dim/60 hover:bg-neutral-700" : "text-cream-dim hover:bg-neutral-700 hover:text-cream";
+  return (
+    <button onClick={onClick} className={`w-full text-left px-3 py-1.5 transition ${color}`}>
+      {label}
     </button>
   );
 }

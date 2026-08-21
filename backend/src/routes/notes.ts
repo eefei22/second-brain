@@ -34,6 +34,30 @@ notesRouter.get("/", async (req, res) => {
   res.json(rows);
 });
 
+// POST /notes — manual tree management: create an empty note directly
+// (bypasses the fragment capture/routing flow entirely — this is the
+// "New Note" action from the tree, named by the user via a prompt).
+notesRouter.post("/", async (req, res) => {
+  const { title, domain_id, parent_folder_id } = req.body as {
+    title: string;
+    domain_id?: string | null;
+    parent_folder_id?: string | null;
+  };
+  if (!title?.trim()) return res.status(400).json({ error: "title required" });
+
+  const titleEmbedding = await embed(title.trim());
+  const [note] = await db
+    .insert(notes)
+    .values({
+      title: title.trim(),
+      titleEmbedding,
+      domainId: domain_id ?? null,
+      parentFolderId: parent_folder_id ?? null,
+    })
+    .returning();
+  res.json(note);
+});
+
 // GET /notes/:id — full detail, rendered body = latest snapshot else appends
 notesRouter.get("/:id", async (req, res) => {
   const { id } = req.params;

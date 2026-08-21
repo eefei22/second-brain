@@ -13,6 +13,12 @@ export interface Domain {
   name: string;
 }
 
+export interface Subfolder {
+  id: string;
+  domainId: string;
+  name: string;
+}
+
 export interface NoteMatch {
   noteId: string;
   title: string;
@@ -21,6 +27,90 @@ export interface NoteMatch {
 
 export async function listDomains(): Promise<Domain[]> {
   const res = await fetch(`${BASE}/domains`);
+  return res.json();
+}
+
+export async function createDomain(name: string): Promise<Domain> {
+  const res = await fetch(`${BASE}/domains`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+export async function renameDomain(id: string, name: string): Promise<Domain> {
+  const res = await fetch(`${BASE}/domains/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+export async function deleteDomain(id: string) {
+  const res = await fetch(`${BASE}/domains/${id}`, { method: "DELETE" });
+  return res.json();
+}
+
+export async function listSubfolders(domainId: string): Promise<Subfolder[]> {
+  const res = await fetch(`${BASE}/domains/${domainId}/subfolders`);
+  return res.json();
+}
+
+export async function createSubfolder(domainId: string, name: string): Promise<Subfolder> {
+  const res = await fetch(`${BASE}/domains/${domainId}/subfolders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+export async function updateSubfolder(
+  id: string,
+  patch: { name?: string; domain_id?: string }
+): Promise<Subfolder> {
+  const res = await fetch(`${BASE}/subfolders/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return res.json();
+}
+
+export async function deleteSubfolder(id: string) {
+  const res = await fetch(`${BASE}/subfolders/${id}`, { method: "DELETE" });
+  return res.json();
+}
+
+export async function createNote(params: {
+  title: string;
+  domain_id?: string | null;
+  parent_folder_id?: string | null;
+}) {
+  const res = await fetch(`${BASE}/notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return res.json();
+}
+
+export async function updateNote(
+  id: string,
+  patch: { title?: string; domain_id?: string | null; parent_folder_id?: string | null }
+) {
+  const res = await fetch(`${BASE}/notes/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return res.json();
+}
+
+export async function deleteNote(id: string) {
+  const res = await fetch(`${BASE}/notes/${id}`, { method: "DELETE" });
   return res.json();
 }
 
@@ -67,12 +157,7 @@ export async function resolveFragment(
 }
 
 export async function updateNoteTitle(noteId: string, title: string) {
-  const res = await fetch(`${BASE}/notes/${noteId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
-  return res.json();
+  return updateNote(noteId, { title });
 }
 
 export async function deferFragment(fragmentId: string) {
