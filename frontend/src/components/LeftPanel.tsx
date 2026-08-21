@@ -551,16 +551,22 @@ function ContextMenu({
           <div className="px-3 py-1 text-xs uppercase tracking-wide text-cream-dim/70">Move to</div>
           {domains
             .filter((d) => {
+              // A subfolder can't be "moved to" the domain it's already in
+              // (there's nowhere else in that domain for it to go). Notes
+              // keep their own domain in the list though — moving between
+              // that domain's root and one of its subfolders is valid.
               if (target.kind === "subfolder") return d.id !== target.subfolder.domainId;
-              if (target.kind === "note") return d.id !== target.note.domain_id;
               return true;
             })
             .map((d) => {
               if (target.kind === "note") {
+                const isCurrentRoot = d.id === target.note.domain_id && !target.note.parent_folder_id;
                 return (
                   <MoveDomainRow
                     key={d.id}
                     domain={d}
+                    hideRoot={isCurrentRoot}
+                    excludeSubfolderId={d.id === target.note.domain_id ? target.note.parent_folder_id : null}
                     onMoveToDomain={() => onMoveNote(target.note, d.id)}
                     onMoveToSubfolder={(subfolderId) => onMoveNote(target.note, d.id, subfolderId)}
                   />
@@ -611,10 +617,14 @@ function ContextMenu({
 // subfolders (lazy-loaded on first expand) as direct move targets too.
 function MoveDomainRow({
   domain,
+  hideRoot,
+  excludeSubfolderId,
   onMoveToDomain,
   onMoveToSubfolder,
 }: {
   domain: Domain;
+  hideRoot?: boolean; // note is already at this domain's root — no-op, hide it
+  excludeSubfolderId?: string | null; // note is already in this subfolder — hide it
   onMoveToDomain: () => void;
   onMoveToSubfolder: (subfolderId: string) => void;
 }) {
@@ -627,24 +637,30 @@ function MoveDomainRow({
     setExpanded((v) => !v);
   }
 
+  const visibleSubs = subs?.filter((s) => s.id !== excludeSubfolderId) ?? null;
+
   return (
     <div>
       <div className="w-full flex items-center hover:bg-neutral-700 transition">
         <button onClick={toggle} className="px-2 py-1.5 text-cream-dim/50 hover:text-cream w-6 text-center">
           {expanded ? "▾" : "▸"}
         </button>
-        <button onClick={onMoveToDomain} className="flex-1 text-left py-1.5 pr-3 text-cream-dim hover:text-cream">
-          {domain.name}
-        </button>
+        {hideRoot ? (
+          <span className="flex-1 py-1.5 pr-3 text-cream-dim/40">{domain.name} (current)</span>
+        ) : (
+          <button onClick={onMoveToDomain} className="flex-1 text-left py-1.5 pr-3 text-cream-dim hover:text-cream">
+            {domain.name}
+          </button>
+        )}
       </div>
       {expanded && (
         <div className="ml-5">
-          {subs === null ? (
+          {visibleSubs === null ? (
             <div className="px-3 py-1 text-xs text-cream-dim/50">Loading...</div>
-          ) : subs.length === 0 ? (
+          ) : visibleSubs.length === 0 ? (
             <div className="px-3 py-1 text-xs text-cream-dim/50">No subfolders</div>
           ) : (
-            subs.map((s) => <MenuItem key={s.id} label={s.name} onClick={() => onMoveToSubfolder(s.id)} />)
+            visibleSubs.map((s) => <MenuItem key={s.id} label={s.name} onClick={() => onMoveToSubfolder(s.id)} />)
           )}
         </div>
       )}
