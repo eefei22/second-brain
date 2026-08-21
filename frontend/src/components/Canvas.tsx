@@ -172,9 +172,10 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     if ((e.metaKey || e.ctrlKey) && e.key === "s") {
       e.preventDefault();
       handleSave();
-    } else if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-      // Overrides the browser's find-in-page — deliberate, this is the
-      // formatter's shortcut while composing.
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+      // Plain Ctrl+F is the browser's reserved find-in-page shortcut —
+      // pages can't override it (Chrome ignores preventDefault on it), so
+      // this needs the extra Shift to actually be interceptable.
       if (formatPhase === "closed" && text.trim()) {
         e.preventDefault();
         setFormatPhase("input");
@@ -247,10 +248,10 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
           {formatPhase === "closed" && (
             <button
               onClick={() => setFormatPhase("input")}
-              title="Ctrl+F"
+              title="Ctrl+Shift+F"
               className="px-2.5 py-1 rounded-full border border-neutral-700 text-xs font-medium text-cream-dim hover:bg-neutral-800 hover:text-cream transition"
             >
-              ✨ Format with AI <span className="text-cream-dim/50">Ctrl+F</span>
+              ✨ Format with AI <span className="text-cream-dim/50">Ctrl+Shift+F</span>
             </button>
           )}
           <div className="flex rounded-full border border-neutral-700 overflow-hidden text-xs">
