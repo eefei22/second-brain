@@ -7,6 +7,7 @@ import {
   listDomains,
   listSubfolders,
   getDomainMatches,
+  formatText,
   type Domain,
   type Subfolder,
   type NoteMatch,
@@ -34,6 +35,14 @@ interface TitleSuggestion {
 //      to creating the note at the domain root) for domains with none.
 type Stage = "idle" | "domain" | "note" | "subfolder";
 
+// Inline AI formatter (separate from the domain/note/subfolder capture
+// stages above — only ever active while stage === "idle", before capture).
+// "input" -> "loading" -> "preview", where preview replaces the main canvas
+// view with the formatted result until Applied or Discarded (never
+// overwrites the draft directly, per the same preview-first pattern as
+// title re-suggestion and the Polish action).
+type FormatPhase = "closed" | "input" | "loading" | "preview";
+
 export function Canvas({ onChanged }: { onChanged?: () => void }) {
   const [text, setText] = useState("");
   const [preview, setPreview] = useState(false);
@@ -46,6 +55,10 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
   const [titleSuggestion, setTitleSuggestion] = useState<TitleSuggestion | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [formatPhase, setFormatPhase] = useState<FormatPhase>("closed");
+  const [formatInstructions, setFormatInstructions] = useState("");
+  const [formatResult, setFormatResult] = useState<string | null>(null);
 
   useEffect(() => {
     listDomains().then(setDomains);
@@ -61,6 +74,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     if (!text.trim()) return;
     setTitleSuggestion(null);
     setPreview(false);
+    cancelFormat();
     const result = await submitFragment(text);
     setFragmentId(result.fragment_id);
     setStage("domain");
@@ -130,6 +144,28 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     setChosenDomainId(null);
     setNoteMatches(null);
     setSubfolders(null);
+    cancelFormat();
+  }
+
+  function cancelFormat() {
+    setFormatPhase("closed");
+    setFormatInstructions("");
+    setFormatResult(null);
+  }
+
+  async function runFormat() {
+    if (!text.trim()) return;
+    setFormatPhase("loading");
+    const { formatted } = await formatText(text, formatInstructions);
+    setFormatResult(formatted);
+    setFormatPhase("preview");
+  }
+
+  function applyFormat() {
+    if (formatResult === null) return;
+    setText(formatResult);
+    setPreview(true); // show the newly-applied markdown rendered, not raw
+    cancelFormat();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -200,19 +236,29 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
       )}
 
       {stage === "idle" && text.trim().length > 0 && (
-        <div className="absolute top-3 right-4 z-10 flex rounded-full border border-neutral-700 overflow-hidden text-xs">
-          <button
-            onClick={() => setPreview(false)}
-            className={`px-2.5 py-1 font-medium transition ${!preview ? "bg-cream text-neutral-900" : "text-cream-dim hover:bg-neutral-800"}`}
-          >
-            Write
-          </button>
-          <button
-            onClick={() => setPreview(true)}
-            className={`px-2.5 py-1 font-medium transition ${preview ? "bg-cream text-neutral-900" : "text-cream-dim hover:bg-neutral-800"}`}
-          >
-            Preview
-          </button>
+        <div className="absolute top-3 right-4 z-10 flex items-center gap-2">
+          {formatPhase === "closed" && (
+            <button
+              onClick={() => setFormatPhase("input")}
+              className="px-2.5 py-1 rounded-full border border-neutral-700 text-xs font-medium text-cream-dim hover:bg-neutral-800 hover:text-cream transition"
+            >
+              ✨ Format with AI
+            </button>
+          )}
+          <div className="flex rounded-full border border-neutral-700 overflow-hidden text-xs">
+            <button
+              onClick={() => setPreview(false)}
+              className={`px-2.5 py-1 font-medium transition ${!preview ? "bg-cream text-neutral-900" : "text-cream-dim hover:bg-neutral-800"}`}
+            >
+              Write
+            </button>
+            <button
+              onClick={() => setPreview(true)}
+              className={`px-2.5 py-1 font-medium transition ${preview ? "bg-cream text-neutral-900" : "text-cream-dim hover:bg-neutral-800"}`}
+            >
+              Preview
+            </button>
+          </div>
         </div>
       )}
 
@@ -221,7 +267,11 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
           became scrollable, stacking a second scrollbar on top of the
           textarea's own native one. */}
       <div className="flex-1 p-8 min-h-0">
-        {preview && stage === "idle" ? (
+        {formatPhase === "preview" && formatResult !== null ? (
+          <div className="w-full h-full overflow-y-auto text-cream text-base leading-relaxed">
+            <Markdown>{formatResult}</Markdown>
+          </div>
+        ) : preview && stage === "idle" ? (
           <div className="w-full h-full overflow-y-auto text-cream text-base leading-relaxed">
             <Markdown>{text}</Markdown>
           </div>
@@ -230,7 +280,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={stage !== "idle"}
+            disabled={stage !== "idle" || formatPhase === "loading"}
             placeholder="Write whatever you want. ⌘S / Ctrl+S to save."
             className="w-full h-full resize-none focus:outline-none bg-transparent text-cream placeholder:text-cream-dim/50 text-base leading-relaxed disabled:opacity-60"
           />
@@ -310,6 +360,70 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {formatPhase !== "closed" && (
+        <div className="border-t border-neutral-700 p-4 bg-neutral-800 space-y-3">
+          {formatPhase === "input" && (
+            <>
+              <div className="text-xs uppercase tracking-wide text-cream-dim">
+                Reformat with AI — instructions (optional)
+              </div>
+              <input
+                autoFocus
+                value={formatInstructions}
+                onChange={(e) => setFormatInstructions(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && runFormat()}
+                placeholder='e.g. "turn this into a table" — leave blank for general markdown cleanup'
+                className="w-full px-2 py-1.5 rounded-md bg-neutral-900 border border-neutral-700 text-cream placeholder:text-cream-dim/50 text-sm focus:outline-none focus:ring-2 focus:ring-cream/40"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={runFormat}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium bg-cream text-neutral-900 hover:bg-cream/90"
+                >
+                  Format
+                </button>
+                <button
+                  onClick={cancelFormat}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium border border-neutral-600 text-cream-dim hover:bg-neutral-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+
+          {formatPhase === "loading" && <div className="text-sm text-cream-dim/70 py-1">Formatting...</div>}
+
+          {formatPhase === "preview" && (
+            <>
+              <div className="text-xs uppercase tracking-wide text-cream-dim">
+                Preview above — apply, tweak the instructions, or discard
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={applyFormat}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium bg-cream text-neutral-900 hover:bg-cream/90"
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={() => setFormatPhase("input")}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium border border-neutral-600 text-cream-dim hover:bg-neutral-700"
+                >
+                  Try again
+                </button>
+                <button
+                  onClick={cancelFormat}
+                  className="px-3 py-1.5 rounded-full text-sm font-medium text-cream-dim/60 hover:bg-neutral-700"
+                >
+                  Discard
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

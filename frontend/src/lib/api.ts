@@ -179,3 +179,12 @@ export async function search(q: string) {
   const res = await fetch(`${BASE}/search?q=${encodeURIComponent(q)}`);
   return res.json();
 }
+
+export async function formatText(text: string, instructions?: string) {
+  const res = await fetch(`${BASE}/format`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, instructions }),
+  });
+  return res.json() as Promise<{ formatted: string }>;
+}

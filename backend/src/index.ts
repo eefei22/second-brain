@@ -11,6 +11,7 @@ import { notesRouter } from "./routes/notes.js";
 import { noteActionsRouter } from "./routes/noteActions.js";
 import { domainsRouter, subfoldersRouter, subfolderSuggestionsRouter } from "./routes/domains.js";
 import { retrievalRouter } from "./routes/retrieval.js";
+import { formatRouter } from "./routes/format.js";
 
 const app = express();
 // Local-only, single-user, no auth (see requirements doc) — the frontend
@@ -29,6 +30,7 @@ app.use("/domains", domainsRouter);
 app.use("/subfolders", subfoldersRouter); // /subfolders/:id (rename/move/delete)
 app.use("/subfolders", subfolderSuggestionsRouter); // /subfolders/suggestions/*
 app.use("/", retrievalRouter); // /search, /chat, /conversations/:id, /summary/generate
+app.use("/format", formatRouter); // inline AI reformatter, used by the Canvas
 
 // Last-resort error handler — logs and returns 500 instead of crashing the
 // process. Express identifies this as the error handler by its 4-arg shape.
