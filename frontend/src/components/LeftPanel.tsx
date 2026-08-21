@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   listDomains,
   listNotes,
@@ -32,6 +32,17 @@ interface MenuState {
   mode: "actions" | "move"; // "move" swaps the menu body to a domain picker
 }
 
+// Custom name/confirm modal — NOT window.prompt()/confirm(). Native dialogs
+// turned out unreliable here: Chrome lets a page's dialogs get silently,
+// permanently suppressed via the "Prevent this page from creating
+// additional dialogs" checkbox, which is easy to trigger by accident while
+// clicking through several menu actions — after that every prompt()/
+// confirm() call just returns null/false with no visible sign anything
+// happened. This has no such failure mode.
+type DialogState =
+  | { kind: "prompt"; title: string; defaultValue?: string; onConfirm: (value: string) => void }
+  | { kind: "confirm"; title: string; message: string; danger?: boolean; onConfirm: () => void };
+
 export function LeftPanel({
   onOpenNote,
   refreshKey,
@@ -50,6 +61,7 @@ export function LeftPanel({
   const [searchResults, setSearchResults] = useState<NoteSummary[] | null>(null);
   const [uncategorized, setUncategorized] = useState<NoteSummary[]>([]);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [dialog, setDialog] = useState<DialogState | null>(null);
 
   useEffect(() => {
     refreshTop();
@@ -127,46 +139,81 @@ export function LeftPanel({
 
   // --- Actions ---------------------------------------------------------
 
-  async function handleNewDomain() {
-    const name = window.prompt("New domain name:");
-    if (!name?.trim()) return;
-    await createDomain(name.trim());
-    refreshTop();
+  function handleNewDomain() {
+    setDialog({
+      kind: "prompt",
+      title: "New domain name",
+      onConfirm: async (name) => {
+        if (!name.trim()) return;
+        await createDomain(name.trim());
+        refreshTop();
+      },
+    });
   }
 
-  async function handleRenameDomain(domain: Domain) {
-    const name = window.prompt("Rename domain:", domain.name);
-    if (!name?.trim() || name.trim() === domain.name) return;
-    await renameDomain(domain.id, name.trim());
-    refreshTop();
+  function handleRenameDomain(domain: Domain) {
+    setDialog({
+      kind: "prompt",
+      title: "Rename domain",
+      defaultValue: domain.name,
+      onConfirm: async (name) => {
+        if (!name.trim() || name.trim() === domain.name) return;
+        await renameDomain(domain.id, name.trim());
+        refreshTop();
+      },
+    });
   }
 
-  async function handleDeleteDomain(domain: Domain) {
-    if (!window.confirm(`Delete "${domain.name}"? Its notes will become Uncategorized, not deleted.`))
-      return;
-    await deleteDomain(domain.id);
-    refreshTop();
+  function handleDeleteDomain(domain: Domain) {
+    setDialog({
+      kind: "confirm",
+      title: "Delete domain",
+      message: `Delete "${domain.name}"? Its notes will become Uncategorized, not deleted.`,
+      danger: true,
+      onConfirm: async () => {
+        await deleteDomain(domain.id);
+        refreshTop();
+      },
+    });
   }
 
-  async function handleNewSubfolder(domainId: string) {
-    const name = window.prompt("New subfolder name:");
-    if (!name?.trim()) return;
-    await createSubfolder(domainId, name.trim());
-    await loadDomainContents(domainId);
-    if (!expandedDomains[domainId]) setExpandedDomains((e) => ({ ...e, [domainId]: true }));
+  function handleNewSubfolder(domainId: string) {
+    setDialog({
+      kind: "prompt",
+      title: "New subfolder name",
+      onConfirm: async (name) => {
+        if (!name.trim()) return;
+        await createSubfolder(domainId, name.trim());
+        await loadDomainContents(domainId);
+        if (!expandedDomains[domainId]) setExpandedDomains((e) => ({ ...e, [domainId]: true }));
+      },
+    });
   }
 
-  async function handleRenameSubfolder(sub: Subfolder) {
-    const name = window.prompt("Rename subfolder:", sub.name);
-    if (!name?.trim() || name.trim() === sub.name) return;
-    await updateSubfolder(sub.id, { name: name.trim() });
-    await loadDomainContents(sub.domainId);
+  function handleRenameSubfolder(sub: Subfolder) {
+    setDialog({
+      kind: "prompt",
+      title: "Rename subfolder",
+      defaultValue: sub.name,
+      onConfirm: async (name) => {
+        if (!name.trim() || name.trim() === sub.name) return;
+        await updateSubfolder(sub.id, { name: name.trim() });
+        await loadDomainContents(sub.domainId);
+      },
+    });
   }
 
-  async function handleDeleteSubfolder(sub: Subfolder) {
-    if (!window.confirm(`Delete "${sub.name}"? Its notes move to the domain root, not deleted.`)) return;
-    await deleteSubfolder(sub.id);
-    await loadDomainContents(sub.domainId);
+  function handleDeleteSubfolder(sub: Subfolder) {
+    setDialog({
+      kind: "confirm",
+      title: "Delete subfolder",
+      message: `Delete "${sub.name}"? Its notes move to the domain root, not deleted.`,
+      danger: true,
+      onConfirm: async () => {
+        await deleteSubfolder(sub.id);
+        await loadDomainContents(sub.domainId);
+      },
+    });
   }
 
   async function handleMoveSubfolder(sub: Subfolder, newDomainId: string) {
@@ -177,26 +224,44 @@ export function LeftPanel({
     setMenu(null);
   }
 
-  async function handleNewNote(domainId: string, parentFolderId: string | null) {
-    const title = window.prompt("New note title:");
-    if (!title?.trim()) return;
-    await createNote({ title: title.trim(), domain_id: domainId, parent_folder_id: parentFolderId });
-    if (parentFolderId) await loadSubfolderNotes(parentFolderId);
-    else await loadDomainContents(domainId);
+  function handleNewNote(domainId: string, parentFolderId: string | null) {
+    setDialog({
+      kind: "prompt",
+      title: "New note title",
+      onConfirm: async (title) => {
+        if (!title.trim()) return;
+        await createNote({ title: title.trim(), domain_id: domainId, parent_folder_id: parentFolderId });
+        if (parentFolderId) await loadSubfolderNotes(parentFolderId);
+        else await loadDomainContents(domainId);
+      },
+    });
   }
 
-  async function handleRenameNote(note: NoteSummary) {
-    const title = window.prompt("Rename note:", note.title);
-    if (!title?.trim() || title.trim() === note.title) return;
-    await updateNote(note.note_id, { title: title.trim() });
-    refreshNoteLocation(note);
+  function handleRenameNote(note: NoteSummary) {
+    setDialog({
+      kind: "prompt",
+      title: "Rename note",
+      defaultValue: note.title,
+      onConfirm: async (title) => {
+        if (!title.trim() || title.trim() === note.title) return;
+        await updateNote(note.note_id, { title: title.trim() });
+        refreshNoteLocation(note);
+      },
+    });
   }
 
-  async function handleDeleteNote(note: NoteSummary) {
-    if (!window.confirm(`Delete "${note.title}"? It can be restored later (soft delete).`)) return;
-    await deleteNote(note.note_id);
-    refreshNoteLocation(note);
-    refreshTop();
+  function handleDeleteNote(note: NoteSummary) {
+    setDialog({
+      kind: "confirm",
+      title: "Delete note",
+      message: `Delete "${note.title}"? It can be restored later (soft delete).`,
+      danger: true,
+      onConfirm: async () => {
+        await deleteNote(note.note_id);
+        refreshNoteLocation(note);
+        refreshTop();
+      },
+    });
   }
 
   async function handleMoveNote(note: NoteSummary, newDomainId: string | null) {
@@ -358,6 +423,8 @@ export function LeftPanel({
           onMoveNote={handleMoveNote}
         />
       )}
+
+      {dialog && <Dialog state={dialog} onClose={() => setDialog(null)} />}
     </div>
   );
 }
@@ -544,5 +611,70 @@ function MenuItem({
     <button onClick={onClick} className={`w-full text-left px-3 py-1.5 transition ${color}`}>
       {label}
     </button>
+  );
+}
+
+function Dialog({ state, onClose }: { state: DialogState; onClose: () => void }) {
+  const [value, setValue] = useState(state.kind === "prompt" ? state.defaultValue ?? "" : "");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  function submit() {
+    if (state.kind === "prompt") {
+      if (!value.trim()) return; // empty name — just close, same as cancelling
+      state.onConfirm(value);
+    } else {
+      state.onConfirm();
+    }
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onMouseDown={onClose}
+      onKeyDown={(e) => e.key === "Escape" && onClose()}
+    >
+      <div
+        className="bg-neutral-800 border border-neutral-600 rounded-lg shadow-xl p-4 w-80"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="text-cream font-medium mb-2">{state.title}</div>
+        {state.kind === "confirm" && <div className="text-cream-dim text-sm mb-4">{state.message}</div>}
+        {state.kind === "prompt" && (
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submit();
+            }}
+            className="w-full px-2 py-1.5 rounded-md bg-neutral-900 border border-neutral-700 text-cream text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-cream/40"
+          />
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md text-sm text-cream-dim hover:bg-neutral-700 transition"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
+              state.kind === "confirm" && state.danger
+                ? "bg-red-600 text-white hover:bg-red-500"
+                : "bg-cream text-neutral-900 hover:bg-cream/90"
+            }`}
+          >
+            {state.kind === "confirm" ? "Delete" : "OK"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
