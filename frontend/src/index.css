@@ -7,3 +7,13 @@ html, body, #root {
   margin: 0;
   background-color: #171717; /* neutral-900 — avoids a white flash before React mounts */
 }
+
+/* Mud green text selection instead of the browser default blue. */
+::selection {
+  background-color: #5c6b47;
+  color: #f2ead9;
+}
+::-moz-selection {
+  background-color: #5c6b47;
+  color: #f2ead9;
+}

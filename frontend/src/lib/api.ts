@@ -170,6 +170,11 @@ export async function deferFragment(fragmentId: string) {
   return res.json();
 }
 
+export async function cancelFragment(fragmentId: string) {
+  const res = await fetch(`${BASE}/fragments/${fragmentId}`, { method: "DELETE" });
+  return res.json();
+}
+
 export async function getQueue() {
   const res = await fetch(`${BASE}/fragments/queue`);
   return res.json();

@@ -3,6 +3,7 @@ import {
   submitFragment,
   resolveFragment,
   deferFragment,
+  cancelFragment,
   updateNoteTitle,
   listDomains,
   listSubfolders,
@@ -59,6 +60,11 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
   const [formatPhase, setFormatPhase] = useState<FormatPhase>("closed");
   const [formatInstructions, setFormatInstructions] = useState("");
   const [formatResult, setFormatResult] = useState<string | null>(null);
+  // Captured when the formatter is opened — if there was an active text
+  // selection at that moment, only that range is sent to the AI and only
+  // that range gets replaced on Apply. null means "operate on the whole draft".
+  const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     listDomains().then(setDomains);
@@ -130,6 +136,23 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     showToast("Saved to inbox");
   }
 
+  // Backs out of the domain/note/subfolder routing flow entirely — e.g. an
+  // accidental Ctrl+S. Unlike a normal resolve/defer, this deliberately
+  // does NOT clear `text`: you didn't mean to submit, so the draft should
+  // still be sitting there to keep editing. The backend fragment row (never
+  // resolved) is deleted so cancelling doesn't leave orphaned rows behind.
+  async function handleCancel() {
+    const idToCancel = fragmentId;
+    setFragmentId(null);
+    setStage("idle");
+    setChosenDomainId(null);
+    setNoteMatches(null);
+    setSubfolders(null);
+    cancelFormat();
+    focusCanvasAt();
+    if (idToCancel) await cancelFragment(idToCancel).catch(() => {});
+  }
+
   async function applyTitleSuggestion() {
     if (!titleSuggestion) return;
     await updateNoteTitle(titleSuggestion.noteId, titleSuggestion.newTitle);
@@ -151,21 +174,62 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     setFormatPhase("closed");
     setFormatInstructions("");
     setFormatResult(null);
+    setSelectionRange(null);
+  }
+
+  // Reads the textarea's current selection (if any) before opening the
+  // panel — selection.start/end stay readable on the element even after
+  // focus moves to the instructions input or the trigger button.
+  function openFormatPanel() {
+    if (!text.trim()) return;
+    const ta = textareaRef.current;
+    const hasSelection = !!ta && ta.selectionStart !== ta.selectionEnd;
+    setSelectionRange(hasSelection ? { start: ta!.selectionStart, end: ta!.selectionEnd } : null);
+    setFormatPhase("input");
   }
 
   async function runFormat() {
     if (!text.trim()) return;
+    const source = selectionRange ? text.slice(selectionRange.start, selectionRange.end) : text;
     setFormatPhase("loading");
-    const { formatted } = await formatText(text, formatInstructions);
+    const { formatted } = await formatText(source, formatInstructions);
     setFormatResult(formatted);
     setFormatPhase("preview");
   }
 
+  // The full document with the formatted piece spliced in — used both for
+  // the preview render (so you see it in context) and for Apply.
+  function spliceFormatResult(): string {
+    if (formatResult === null) return text;
+    if (!selectionRange) return formatResult;
+    return text.slice(0, selectionRange.start) + formatResult + text.slice(selectionRange.end);
+  }
+
+  // Focuses the canvas textarea after the format flow ends, placing the
+  // cursor right after whatever was just inserted (or end-of-text for a
+  // whole-draft format). Deferred to the next frame since it runs right
+  // after a state update that may still be re-rendering the textarea.
+  function focusCanvasAt(pos?: number) {
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      if (pos !== undefined) ta.setSelectionRange(pos, pos);
+    });
+  }
+
   function applyFormat() {
     if (formatResult === null) return;
-    setText(formatResult);
-    setPreview(true); // show the newly-applied markdown rendered, not raw
+    const newText = spliceFormatResult();
+    const cursorPos = selectionRange ? selectionRange.start + formatResult.length : newText.length;
+    setText(newText);
     cancelFormat();
+    focusCanvasAt(cursorPos);
+  }
+
+  function discardFormat() {
+    cancelFormat();
+    focusCanvasAt();
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -178,7 +242,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
       // this needs the extra Shift to actually be interceptable.
       if (formatPhase === "closed" && text.trim()) {
         e.preventDefault();
-        setFormatPhase("input");
+        openFormatPanel();
       }
     }
   }
@@ -187,6 +251,11 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
   useEffect(() => {
     if (stage === "idle") return;
     function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleCancel();
+        return;
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (!/^[0-9]$/.test(e.key)) return;
       const n = Number(e.key);
@@ -233,7 +302,46 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, domains, noteMatches, subfolders, chosenDomainId]);
+  }, [stage, domains, noteMatches, subfolders, chosenDomainId, fragmentId]);
+
+  // 1/2/3 for Apply / Try again / Discard once the formatted preview is
+  // showing. Separate effect (rather than folding into the one above)
+  // since it's keyed off formatPhase, not stage — the two are independent.
+  useEffect(() => {
+    if (formatPhase !== "preview") return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "1") {
+        e.preventDefault();
+        applyFormat();
+      } else if (e.key === "2") {
+        e.preventDefault();
+        setFormatPhase("input");
+      } else if (e.key === "3") {
+        e.preventDefault();
+        discardFormat();
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formatPhase, formatResult, selectionRange, text]);
+
+  // Ctrl+Shift+V toggles Write/Preview. Window-level (not the textarea's own
+  // onKeyDown, like Ctrl+S/Ctrl+Shift+F) since the textarea isn't even in
+  // the DOM while Preview is showing — a handler scoped to it could only
+  // ever fire in one direction.
+  useEffect(() => {
+    if (stage !== "idle" || !text.trim()) return;
+    function handleKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        setPreview((p) => !p);
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [stage, text]);
 
   return (
     <div className="h-full flex flex-col bg-neutral-900 relative">
@@ -247,14 +355,17 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
         <div className="absolute top-3 right-4 z-10 flex items-center gap-2">
           {formatPhase === "closed" && (
             <button
-              onClick={() => setFormatPhase("input")}
-              title="Ctrl+Shift+F"
+              onClick={openFormatPanel}
+              title="Ctrl+Shift+F — select some text first to format just that part"
               className="px-2.5 py-1 rounded-full border border-neutral-700 text-xs font-medium text-cream-dim hover:bg-neutral-800 hover:text-cream transition"
             >
               ✨ Format with AI <span className="text-cream-dim/50">Ctrl+Shift+F</span>
             </button>
           )}
-          <div className="flex rounded-full border border-neutral-700 overflow-hidden text-xs">
+          <div
+            title="Ctrl+Shift+V toggles Write/Preview"
+            className="flex rounded-full border border-neutral-700 overflow-hidden text-xs"
+          >
             <button
               onClick={() => setPreview(false)}
               className={`px-2.5 py-1 font-medium transition ${!preview ? "bg-cream text-neutral-900" : "text-cream-dim hover:bg-neutral-800"}`}
@@ -275,30 +386,60 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
           content (a flexbox default-quirk) — without it this wrapper also
           became scrollable, stacking a second scrollbar on top of the
           textarea's own native one. */}
-      <div className="flex-1 p-8 min-h-0">
+      <div className="flex-1 px-8 pb-8 pt-16 min-h-0">
         {formatPhase === "preview" && formatResult !== null ? (
           <div className="w-full h-full overflow-y-auto text-cream text-base leading-relaxed">
-            <Markdown>{formatResult}</Markdown>
+            {/* Full document with the formatted piece spliced in, so a
+                selection-scoped reformat previews in context rather than
+                hiding the rest of the draft. */}
+            <Markdown>{spliceFormatResult()}</Markdown>
           </div>
         ) : preview && stage === "idle" ? (
           <div className="w-full h-full overflow-y-auto text-cream text-base leading-relaxed">
             <Markdown>{text}</Markdown>
           </div>
         ) : (
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={stage !== "idle" || formatPhase === "loading"}
-            placeholder="Write whatever you want. ⌘S / Ctrl+S to save."
-            className="w-full h-full resize-none focus:outline-none bg-transparent text-cream placeholder:text-cream-dim/50 text-base leading-relaxed disabled:opacity-60"
-          />
+          <div className="relative w-full h-full">
+            {/* A textarea's own text selection dims to grey the moment it
+                loses focus (typing into the instructions box, clicking
+                Format) — browsers don't let CSS override that. This mirrors
+                the selected range as a background highlight sitting behind
+                the (transparent-background) textarea, so it stays mud-green
+                for as long as the format flow is open, regardless of focus. */}
+            {selectionRange && (formatPhase === "input" || formatPhase === "loading") && (
+              <div
+                aria-hidden
+                className="absolute inset-0 whitespace-pre-wrap break-words text-base leading-relaxed pointer-events-none"
+                style={{ color: "transparent" }}
+              >
+                {text.slice(0, selectionRange.start)}
+                <span style={{ backgroundColor: "#5c6b47" }}>
+                  {text.slice(selectionRange.start, selectionRange.end)}
+                </span>
+                {text.slice(selectionRange.end)}
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={stage !== "idle" || formatPhase === "loading"}
+              placeholder="Write whatever you want. ⌘S / Ctrl+S to save."
+              className="relative w-full h-full resize-none focus:outline-none bg-transparent text-cream placeholder:text-cream-dim/50 text-base leading-relaxed disabled:opacity-60"
+            />
+          </div>
         )}
       </div>
 
       {stage === "domain" && (
         <div className="border-t border-neutral-700 p-4 bg-neutral-800 space-y-2">
-          <div className="text-xs uppercase tracking-wide text-cream-dim mb-1">Which domain?</div>
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs uppercase tracking-wide text-cream-dim">Which domain?</div>
+            <button onClick={handleCancel} className="text-xs text-cream-dim/70 hover:text-cream transition">
+              ✕ Cancel <span className="text-cream-dim/40">Esc</span>
+            </button>
+          </div>
           <div className="flex flex-wrap gap-2">
             {domains.map((d, i) => (
               <NumberedButton key={d.id} number={i + 1} label={d.name} onClick={() => chooseDomain(d.id)} />
@@ -309,8 +450,13 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
 
       {stage === "note" && (
         <div className="border-t border-neutral-700 p-4 bg-neutral-800 space-y-2">
-          <div className="text-xs uppercase tracking-wide text-cream-dim mb-1">
-            {domains.find((d) => d.id === chosenDomainId)?.name ?? "..."} — continue or start new?
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs uppercase tracking-wide text-cream-dim">
+              {domains.find((d) => d.id === chosenDomainId)?.name ?? "..."} — continue or start new?
+            </div>
+            <button onClick={handleCancel} className="text-xs text-cream-dim/70 hover:text-cream transition">
+              ✕ Cancel <span className="text-cream-dim/40">Esc</span>
+            </button>
           </div>
           {noteMatches === null ? (
             <div className="text-sm text-cream-dim/70 py-1">Finding matches...</div>
@@ -347,12 +493,17 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
             <div className="text-xs uppercase tracking-wide text-cream-dim">
               New note in {domains.find((d) => d.id === chosenDomainId)?.name ?? "..."} — where?
             </div>
-            <button
-              onClick={() => setStage("note")}
-              className="text-xs text-cream-dim/70 hover:text-cream transition"
-            >
-              ← Back
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setStage("note")}
+                className="text-xs text-cream-dim/70 hover:text-cream transition"
+              >
+                ← Back
+              </button>
+              <button onClick={handleCancel} className="text-xs text-cream-dim/70 hover:text-cream transition">
+                ✕ Cancel <span className="text-cream-dim/40">Esc</span>
+              </button>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <NumberedButton
@@ -377,7 +528,9 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
           {formatPhase === "input" && (
             <>
               <div className="text-xs uppercase tracking-wide text-cream-dim">
-                Reformat with AI — instructions (optional)
+                {selectionRange
+                  ? `Reformat selected text (${selectionRange.end - selectionRange.start} characters) — instructions (optional)`
+                  : "Reformat with AI — instructions (optional)"}
               </div>
               <div className="text-xs text-cream-dim/50 -mt-2">
                 Structure only — your wording stays as-is, nothing is reworded, summarized, or added.
@@ -415,24 +568,9 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
                 Preview above — apply, tweak the instructions, or discard
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={applyFormat}
-                  className="px-3 py-1.5 rounded-full text-sm font-medium bg-cream text-neutral-900 hover:bg-cream/90"
-                >
-                  Apply
-                </button>
-                <button
-                  onClick={() => setFormatPhase("input")}
-                  className="px-3 py-1.5 rounded-full text-sm font-medium border border-neutral-600 text-cream-dim hover:bg-neutral-700"
-                >
-                  Try again
-                </button>
-                <button
-                  onClick={cancelFormat}
-                  className="px-3 py-1.5 rounded-full text-sm font-medium text-cream-dim/60 hover:bg-neutral-700"
-                >
-                  Discard
-                </button>
+                <NumberedButton number={1} label="Apply" onClick={applyFormat} />
+                <NumberedButton number={2} label="Try again" variant="ghost" onClick={() => setFormatPhase("input")} />
+                <NumberedButton number={3} label="Discard" variant="muted" onClick={discardFormat} />
               </div>
             </>
           )}

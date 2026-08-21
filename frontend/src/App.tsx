@@ -27,7 +27,7 @@ export default function App() {
         <>
           <PanelResizeHandle className="w-1 bg-neutral-800 hover:bg-neutral-600 transition" />
           <Panel defaultSize={30} minSize={20} collapsible>
-            <NoteDetail noteId={openNoteId} onClose={() => setOpenNoteId(null)} />
+            <NoteDetail noteId={openNoteId} refreshKey={refreshKey} onClose={() => setOpenNoteId(null)} />
           </Panel>
         </>
       )}

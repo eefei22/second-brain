@@ -8,14 +8,26 @@ interface NoteData {
   body: string;
 }
 
-export function NoteDetail({ noteId, onClose }: { noteId: string; onClose: () => void }) {
+export function NoteDetail({
+  noteId,
+  refreshKey,
+  onClose,
+}: {
+  noteId: string;
+  refreshKey: number;
+  onClose: () => void;
+}) {
   const [note, setNote] = useState<NoteData | null>(null);
   const [actionResult, setActionResult] = useState<{ label: string; text: string } | null>(null);
 
+  // refreshKey (bumped by Canvas after every resolve/defer) re-fetches this
+  // note too, not just the left panel tree — otherwise appending to a note
+  // that's already open here left the panel showing stale content until you
+  // closed and reopened it (or refreshed the page).
   useEffect(() => {
     getNote(noteId).then(setNote);
     setActionResult(null);
-  }, [noteId]);
+  }, [noteId, refreshKey]);
 
   async function runAction(action: "summarize" | "polish") {
     const res = await fetch(

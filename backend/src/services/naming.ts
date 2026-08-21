@@ -14,6 +14,15 @@ const MAX_TITLE_LENGTH = 80;
 // new title is considered a meaningful enough divergence to surface.
 const TITLE_DIVERGENCE_FLOOR = 0.9;
 
+// Only worth regenerating the title for a substantial append — a one-line
+// addition is unlikely to shift the note's overall topic, and this skips an
+// LLM call (title regen + re-embed) on every small append.
+export const TITLE_RESUGGEST_MIN_WORDS = 200;
+
+export function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
 export async function generateTitle(content: string): Promise<string> {
   const raw = await getLLM().complete({
     maxTokens: 30,
@@ -30,25 +39,24 @@ export async function generateTitle(content: string): Promise<string> {
 
 /**
  * Regenerates a title from a note's full (post-append) body and checks
- * whether it meaningfully diverges from the current title. Always returns
- * the new title + its embedding so the caller can silently refresh
- * title_embedding (the "embedding freshness rule") even when not surfacing
- * the suggestion to the user.
+ * whether it meaningfully diverges from the current title. This is a
+ * read-only check — it does NOT persist anything. The note's title/
+ * title_embedding only actually change if the caller applies the
+ * suggestion (see PATCH /notes/:id, which re-embeds there). Divergence is
+ * always measured against the *currently stored* title embedding, so a
+ * suggestion that's shown but never applied can't skew the next check.
  */
 export async function suggestTitle(
   currentTitle: string,
   currentTitleEmbedding: number[] | null,
   fullBody: string
-): Promise<{ title: string; embedding: number[]; diverges: boolean }> {
+): Promise<{ title: string; diverges: boolean }> {
   const title = await generateTitle(fullBody);
 
-  // Unchanged title + an embedding already on file — nothing to do.
-  if (title === currentTitle && currentTitleEmbedding) {
-    return { title, embedding: currentTitleEmbedding, diverges: false };
-  }
+  if (title === currentTitle) return { title, diverges: false };
 
   const embedding = await embed(title);
   const diverges =
     !currentTitleEmbedding || cosineSimilarity(currentTitleEmbedding, embedding) < TITLE_DIVERGENCE_FLOOR;
-  return { title, embedding, diverges };
+  return { title, diverges };
 }

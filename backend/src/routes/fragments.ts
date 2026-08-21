@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { fragments, notes, noteAppends } from "../db/schema.js";
 import { embed } from "../services/embeddings.js";
 import { getSuggestions, getDomainScopedNoteSuggestions } from "../services/matching.js";
-import { generateTitle, suggestTitle } from "../services/naming.js";
+import { generateTitle, suggestTitle, countWords, TITLE_RESUGGEST_MIN_WORDS } from "../services/naming.js";
 import { getNoteBody } from "../services/noteBody.js";
 
 export const fragmentsRouter = Router();
@@ -102,25 +102,27 @@ fragmentsRouter.post("/:id/resolve", async (req, res) => {
     .set({ status: "resolved", resolvedNoteId: noteId, resolvedAppendId: append.id })
     .where(eq(fragments.id, id));
 
-  // Title re-suggestion — regenerate from the note's full updated body,
-  // silently refresh title_embedding either way (freshness rule), only
-  // surface the new title to the frontend if it meaningfully diverges.
+  // Title re-suggestion — only worth checking for a substantial append (see
+  // TITLE_RESUGGEST_MIN_WORDS); a one-liner is unlikely to shift the note's
+  // topic and isn't worth an LLM call. When it does run: regenerate from the
+  // note's full updated body, surface the new title only if it meaningfully
+  // diverges from what's *actually stored*. Read-only check — title/
+  // titleEmbedding are untouched here regardless of outcome; they only
+  // change if the suggestion is applied (PATCH /notes/:id re-embeds there).
+  // Persisting the candidate embedding here even when dismissed used to move
+  // the comparison baseline out from under the next append, causing
+  // spurious repeat suggestions.
   let suggestedTitle: string | undefined;
   if (isAppendToExisting) {
     const [currentNote] = await db.select().from(notes).where(eq(notes.id, noteId));
-    if (currentNote) {
+    if (currentNote && countWords(fragment.content) > TITLE_RESUGGEST_MIN_WORDS) {
       const body = await getNoteBody(noteId);
-      const { title, embedding, diverges } = await suggestTitle(
-        currentNote.title,
-        currentNote.titleEmbedding,
-        body
-      );
-      await db
-        .update(notes)
-        .set({ titleEmbedding: embedding, updatedAt: new Date() })
-        .where(eq(notes.id, noteId));
+      const { title, diverges } = await suggestTitle(currentNote.title, currentNote.titleEmbedding, body);
       if (diverges) suggestedTitle = title;
     }
+    // Appending changes the note regardless of the title outcome — keep
+    // "most recently updated" sorting accurate.
+    await db.update(notes).set({ updatedAt: new Date() }).where(eq(notes.id, noteId));
   }
 
   res.json({ note_id: noteId, append_id: append.id, suggested_title: suggestedTitle });
@@ -131,6 +133,14 @@ fragmentsRouter.post("/:id/defer", async (req, res) => {
   const { id } = req.params;
   await db.update(fragments).set({ status: "queued" }).where(eq(fragments.id, id));
   res.json({ status: "queued" });
+});
+
+// DELETE /fragments/:id — cancel a pending capture (e.g. the user backed out
+// of the domain/note picker). Hard delete is fine here — a fragment is just
+// a transient routing artifact until resolved, never user content itself.
+fragmentsRouter.delete("/:id", async (req, res) => {
+  await db.delete(fragments).where(eq(fragments.id, req.params.id));
+  res.json({ fragment_id: req.params.id, deleted: true });
 });
 
 // GET /fragments/queue — list deferred fragments
