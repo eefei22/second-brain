@@ -51,7 +51,12 @@ fragmentsRouter.get("/:id/domain-matches", async (req, res) => {
 fragmentsRouter.post("/:id/resolve", async (req, res) => {
   const { id } = req.params;
   const { target } = req.body as {
-    target: { type: "note" | "domain" | "uncategorized"; note_id?: string; domain_id?: string };
+    target: {
+      type: "note" | "domain" | "uncategorized";
+      note_id?: string;
+      domain_id?: string;
+      parent_folder_id?: string; // optional — new note goes into this subfolder instead of the domain root
+    };
   };
 
   const [fragment] = await db.select().from(fragments).where(eq(fragments.id, id));
@@ -74,6 +79,7 @@ fragmentsRouter.post("/:id/resolve", async (req, res) => {
       .insert(notes)
       .values({
         domainId: target.type === "domain" ? target.domain_id : null,
+        parentFolderId: target.type === "domain" ? target.parent_folder_id ?? null : null,
         title,
         titleEmbedding,
       })

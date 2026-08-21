@@ -5,8 +5,10 @@ import {
   deferFragment,
   updateNoteTitle,
   listDomains,
+  listSubfolders,
   getDomainMatches,
   type Domain,
+  type Subfolder,
   type NoteMatch,
 } from "../lib/api.js";
 import { Markdown } from "./Markdown.js";
@@ -26,7 +28,11 @@ interface TitleSuggestion {
 //   2. "note" stage — ranked "Continue: ..." candidates *within* that domain
 //      (top 7, no similarity floor — the user already committed to the
 //      domain), then fixed slots: 8 New Note, 9 Resolve later, 0 Uncategorized.
-type Stage = "idle" | "domain" | "note";
+//   3. "subfolder" stage — only entered from "New Note" when the chosen
+//      domain actually has subfolders; picks where in the domain the new
+//      note lands (root or a specific subfolder). Skipped entirely (straight
+//      to creating the note at the domain root) for domains with none.
+type Stage = "idle" | "domain" | "note" | "subfolder";
 
 export function Canvas({ onChanged }: { onChanged?: () => void }) {
   const [text, setText] = useState("");
@@ -36,6 +42,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
   const [domains, setDomains] = useState<Domain[]>([]);
   const [chosenDomainId, setChosenDomainId] = useState<string | null>(null);
   const [noteMatches, setNoteMatches] = useState<NoteMatch[] | null>(null);
+  const [subfolders, setSubfolders] = useState<Subfolder[] | null>(null);
   const [titleSuggestion, setTitleSuggestion] = useState<TitleSuggestion | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -63,15 +70,32 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     if (!fragmentId) return;
     setChosenDomainId(domainId);
     setNoteMatches(null);
+    setSubfolders(null);
     setStage("note");
-    const { notes } = await getDomainMatches(fragmentId, domainId);
+    const [{ notes }, subs] = await Promise.all([
+      getDomainMatches(fragmentId, domainId),
+      listSubfolders(domainId),
+    ]);
     setNoteMatches(notes);
+    setSubfolders(subs);
+  }
+
+  // "New Note" — only domains with subfolders get an extra stop to pick
+  // where in the domain the note lands; otherwise straight to the root.
+  function handleNewNoteClick() {
+    if (!chosenDomainId) return;
+    if (subfolders && subfolders.length > 0) {
+      setStage("subfolder");
+    } else {
+      handleResolve({ type: "domain", domain_id: chosenDomainId });
+    }
   }
 
   async function handleResolve(target: {
     type: "note" | "domain" | "uncategorized";
     note_id?: string;
     domain_id?: string;
+    parent_folder_id?: string;
   }) {
     if (!fragmentId) return;
     const oldTitle = noteMatches?.find((n) => n.noteId === target.note_id)?.title;
@@ -105,6 +129,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     setStage("idle");
     setChosenDomainId(null);
     setNoteMatches(null);
+    setSubfolders(null);
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -129,6 +154,22 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
         return;
       }
 
+      if (stage === "subfolder") {
+        if (!chosenDomainId || subfolders === null) return;
+        if (n === 1) {
+          e.preventDefault();
+          handleResolve({ type: "domain", domain_id: chosenDomainId });
+        } else if (n >= 2 && n <= subfolders.length + 1) {
+          e.preventDefault();
+          handleResolve({
+            type: "domain",
+            domain_id: chosenDomainId,
+            parent_folder_id: subfolders[n - 2].id,
+          });
+        }
+        return;
+      }
+
       // stage === "note"
       if (noteMatches === null) return; // still loading — ignore keys
       if (n >= 1 && n <= 7 && n <= noteMatches.length) {
@@ -136,7 +177,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
         handleResolve({ type: "note", note_id: noteMatches[n - 1].noteId });
       } else if (n === 8) {
         e.preventDefault();
-        if (chosenDomainId) handleResolve({ type: "domain", domain_id: chosenDomainId });
+        handleNewNoteClick();
       } else if (n === 9) {
         e.preventDefault();
         handleDefer();
@@ -148,7 +189,7 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stage, domains, noteMatches, chosenDomainId]);
+  }, [stage, domains, noteMatches, subfolders, chosenDomainId]);
 
   return (
     <div className="h-full flex flex-col bg-neutral-900 relative">
@@ -226,8 +267,8 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
               ))}
               <NumberedButton
                 number={8}
-                label="New Note"
-                onClick={() => chosenDomainId && handleResolve({ type: "domain", domain_id: chosenDomainId })}
+                label={subfolders && subfolders.length > 0 ? "New Note..." : "New Note"}
+                onClick={handleNewNoteClick}
               />
               <NumberedButton number={9} label="Resolve later" variant="ghost" onClick={handleDefer} />
               <NumberedButton
@@ -238,6 +279,37 @@ export function Canvas({ onChanged }: { onChanged?: () => void }) {
               />
             </div>
           )}
+        </div>
+      )}
+
+      {stage === "subfolder" && chosenDomainId && (
+        <div className="border-t border-neutral-700 p-4 bg-neutral-800 space-y-2">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-xs uppercase tracking-wide text-cream-dim">
+              New note in {domains.find((d) => d.id === chosenDomainId)?.name ?? "..."} — where?
+            </div>
+            <button
+              onClick={() => setStage("note")}
+              className="text-xs text-cream-dim/70 hover:text-cream transition"
+            >
+              ← Back
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <NumberedButton
+              number={1}
+              label="(No subfolder)"
+              onClick={() => handleResolve({ type: "domain", domain_id: chosenDomainId })}
+            />
+            {(subfolders ?? []).map((s, i) => (
+              <NumberedButton
+                key={s.id}
+                number={i + 2}
+                label={s.name}
+                onClick={() => handleResolve({ type: "domain", domain_id: chosenDomainId, parent_folder_id: s.id })}
+              />
+            ))}
+          </div>
         </div>
       )}
 

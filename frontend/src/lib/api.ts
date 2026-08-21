@@ -146,7 +146,12 @@ export async function getDomainMatches(fragmentId: string, domainId: string) {
 
 export async function resolveFragment(
   fragmentId: string,
-  target: { type: "note" | "domain" | "uncategorized"; note_id?: string; domain_id?: string }
+  target: {
+    type: "note" | "domain" | "uncategorized";
+    note_id?: string;
+    domain_id?: string;
+    parent_folder_id?: string;
+  }
 ) {
   const res = await fetch(`${BASE}/fragments/${fragmentId}/resolve`, {
     method: "POST",
