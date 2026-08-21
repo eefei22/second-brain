@@ -264,10 +264,15 @@ export function LeftPanel({
     });
   }
 
-  async function handleMoveNote(note: NoteSummary, newDomainId: string | null) {
-    await updateNote(note.note_id, { domain_id: newDomainId, parent_folder_id: null });
+  async function handleMoveNote(
+    note: NoteSummary,
+    newDomainId: string | null,
+    newParentFolderId: string | null = null
+  ) {
+    await updateNote(note.note_id, { domain_id: newDomainId, parent_folder_id: newParentFolderId });
     refreshNoteLocation(note);
-    if (newDomainId && expandedDomains[newDomainId]) await loadDomainContents(newDomainId);
+    if (newParentFolderId && expandedSubfolders[newParentFolderId]) await loadSubfolderNotes(newParentFolderId);
+    else if (newDomainId && expandedDomains[newDomainId]) await loadDomainContents(newDomainId);
     if (!newDomainId) refreshTop();
     setMenu(null);
   }
@@ -526,7 +531,7 @@ function ContextMenu({
   onMoveSubfolder: (s: Subfolder, newDomainId: string) => void;
   onRenameNote: (n: NoteSummary) => void;
   onDeleteNote: (n: NoteSummary) => void;
-  onMoveNote: (n: NoteSummary, newDomainId: string | null) => void;
+  onMoveNote: (n: NoteSummary, newDomainId: string | null, newParentFolderId?: string | null) => void;
 }) {
   // Clamp so the menu never renders off the right/bottom edge.
   const style = { left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 200) };
@@ -550,16 +555,22 @@ function ContextMenu({
               if (target.kind === "note") return d.id !== target.note.domain_id;
               return true;
             })
-            .map((d) => (
-              <MenuItem
-                key={d.id}
-                label={d.name}
-                onClick={() => {
-                  if (target.kind === "subfolder") onMoveSubfolder(target.subfolder, d.id);
-                  if (target.kind === "note") onMoveNote(target.note, d.id);
-                }}
-              />
-            ))}
+            .map((d) => {
+              if (target.kind === "note") {
+                return (
+                  <MoveDomainRow
+                    key={d.id}
+                    domain={d}
+                    onMoveToDomain={() => onMoveNote(target.note, d.id)}
+                    onMoveToSubfolder={(subfolderId) => onMoveNote(target.note, d.id, subfolderId)}
+                  />
+                );
+              }
+              if (target.kind === "subfolder") {
+                return <MenuItem key={d.id} label={d.name} onClick={() => onMoveSubfolder(target.subfolder, d.id)} />;
+              }
+              return null;
+            })}
           {target.kind === "note" && target.note.domain_id && (
             <MenuItem label="Uncategorized" onClick={() => onMoveNote(target.note, null)} />
           )}
@@ -591,6 +602,52 @@ function ContextMenu({
       <div className="border-t border-neutral-700 mt-1 pt-1">
         <MenuItem label="Cancel" muted onClick={onClose} />
       </div>
+    </div>
+  );
+}
+
+// One row in the "Move to" list for a note — clicking the name moves the
+// note to that domain's root; the chevron expands to show the domain's
+// subfolders (lazy-loaded on first expand) as direct move targets too.
+function MoveDomainRow({
+  domain,
+  onMoveToDomain,
+  onMoveToSubfolder,
+}: {
+  domain: Domain;
+  onMoveToDomain: () => void;
+  onMoveToSubfolder: (subfolderId: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [subs, setSubs] = useState<Subfolder[] | null>(null);
+
+  async function toggle(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!expanded && subs === null) setSubs(await listSubfolders(domain.id));
+    setExpanded((v) => !v);
+  }
+
+  return (
+    <div>
+      <div className="w-full flex items-center hover:bg-neutral-700 transition">
+        <button onClick={toggle} className="px-2 py-1.5 text-cream-dim/50 hover:text-cream w-6 text-center">
+          {expanded ? "▾" : "▸"}
+        </button>
+        <button onClick={onMoveToDomain} className="flex-1 text-left py-1.5 pr-3 text-cream-dim hover:text-cream">
+          {domain.name}
+        </button>
+      </div>
+      {expanded && (
+        <div className="ml-5">
+          {subs === null ? (
+            <div className="px-3 py-1 text-xs text-cream-dim/50">Loading...</div>
+          ) : subs.length === 0 ? (
+            <div className="px-3 py-1 text-xs text-cream-dim/50">No subfolders</div>
+          ) : (
+            subs.map((s) => <MenuItem key={s.id} label={s.name} onClick={() => onMoveToSubfolder(s.id)} />)
+          )}
+        </div>
+      )}
     </div>
   );
 }
